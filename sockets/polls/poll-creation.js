@@ -9,6 +9,7 @@ module.exports = {
             try {
                 const email = socket.request.session.email;
                 const classId = classStateStore.getUser(email).activeClass;
+                console.log("Received startPoll with data:", args, 'and answers:', args[0]?.answers);
 
                 // Support both passing a single object or multiple arguments for backward compatibility
                 let pollData;
