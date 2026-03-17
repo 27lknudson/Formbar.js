@@ -140,15 +140,6 @@ function broadcastClassUpdate(email, classId) {
     userUpdateSocket(email, "classUpdate", classId, { global: true });
 }
 
-/*** Processes a string to format it as markdown.
- * @param {string} input - The input string to process.
- * @returns {string} The processed string.
- */
-function processMarkdown(input) {
-    
-    return formatted;
-}
-
 /**
  * Creates a new poll in the class.
  * @param {number} classId - The ID of the class.
