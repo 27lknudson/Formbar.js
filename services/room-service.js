@@ -15,26 +15,46 @@ function getClassService() {
     return classService;
 }
 
-async function isUserInRoom(userId, classId) {
-    const result = await dbGet("SELECT 1 FROM classusers WHERE studentId = ? AND classId = ?", [userId, classId]);
-    return !!result;
+async function deleteRoom(roomId) {
+    requireInternalParam(roomId, "roomId");
+
+    await dbRun("BEGIN TRANSACTION");
+    try {
+        await dbRun("DELETE FROM classroom WHERE id=?", [roomId]);
+        await dbRun("DELETE FROM classusers WHERE classId=?", [roomId]);
+        await dbRun("COMMIT");
+    } catch (err) {
+        try {
+            await dbRun("ROLLBACK");
+        } catch (rollbackErr) {
+            // Intentionally ignore rollback errors to avoid masking the original error
+        }
+        throw err;
+    }
 }
 
-function getLinksInRoom(classId) {
-    requireInternalParam(classId, "classId");
-    return dbGetAll("SELECT name, url FROM links WHERE classId = ?", [classId]);
+function getRoomById(roomId) {
+    requireInternalParam(roomId, "roomId");
+
+    return dbGet("SELECT * FROM classroom WHERE id=?", [roomId]);
 }
 
 /**
- * Allows a user to join a room using a room code for the FIRST TIME.
- * This function should only be used when a user is joining with a code they received.
- * For rejoining a class the user is already a member of, use joinClass from class-service.
- * Handles loading classroom data, validating user permissions, and updating session state.
- * @param {string} code - The room code to join
- * @param {Object} sessionUser - The user's session object containing email and other data
- * @returns {Promise<boolean>} Returns true if successful
- * @throws {NotFoundError} If no class exists with that code
- * @throws {ForbiddenError} If user is banned from the class
+ * Join a classroom for the first time using a room code.
+ *
+ * Use this function when a user is joining with a code they received. For rejoining a class
+ * the user is already a member of, use `joinClass` from `class-service` instead.
+ *
+ * This function will:
+ *  - Look up the classroom by the provided code.
+ *  - Initialize the classroom in memory if it's not already loaded.
+ *  - Delegate the actual joining logic to `class-service.addUserToClassroomSession`.
+ *
+ * @param {string} code - The room code to join.
+ * @param {Object} sessionUser - The user's session object (must include `email`).
+ * @returns {Promise<{success: boolean, roomId?: number}>} Resolves to an object with `success: true` and `roomId` on success, or `{ success: false }` if the underlying service indicates the join failed.
+ * @throws {NotFoundError} If no class exists with that code.
+ * @throws {Error} Errors from `class-service` (for example, permission/ban related errors) are propagated.
  */
 async function joinRoomByCode(code, sessionUser) {
     const email = sessionUser.email;
@@ -55,20 +75,32 @@ async function joinRoomByCode(code, sessionUser) {
     // Delegate to class-service to handle the actual joining logic
     // This avoids code duplication and keeps room-service focused on code validation
     const result = await getClassService().addUserToClassroomSession(classroomDb.id, email, sessionUser);
-    return result;
+    if (!result) {
+        return { success: false };
+    }
+
+    return {
+        success: true,
+        roomId: classroomDb.id,
+    };
 }
 
 /**
- * Allows a user to join a room using a class code.
- * Emits the joinClass event to the user with the result.
- * @param {Object} userSession - The session object of the user attempting to join.
+ * Join a room by class code and emit the result back to the user's sockets.
+ *
+ * This wraps `joinRoomByCode` and forwards the resulting payload to the user's
+ * connected clients via the `joinClass` socket event.
+ *
+ * @param {Object} userSession - The session object of the user attempting to join. Must include `email` and may include other session data required by `joinRoomByCode`.
  * @param {string} classCode - The code of the class to join.
- * @returns {Promise<boolean>} Returns true if joined successfully.
+ * @returns {Promise<{success: boolean, roomId?: number}>} Resolves to the join result returned by `joinRoomByCode`. On success `success` is true and `roomId` is provided.
+ * @throws {NotFoundError} If no class exists with that code (propagated from `joinRoomByCode`).
+ * @throws {Error} Errors from `class-service` (for example, permission/ban related errors) are propagated.
  */
 async function joinRoom(userSession, classCode) {
     const response = await joinRoomByCode(classCode, userSession);
     emitToUser(userSession.email, "joinClass", response);
-    return true;
+    return response;
 }
 
 /**
@@ -95,7 +127,7 @@ async function leaveRoom(userData) {
 
     // If the owner of the classroom leaves, then delete the classroom
     const owner = (await dbGet("SELECT owner FROM classroom WHERE id=?", classId)).owner;
-    if (owner == studentId) {
+    if (owner === studentId) {
         await dbRun("DELETE FROM classroom WHERE id=?", classId);
     }
 
@@ -112,10 +144,38 @@ async function leaveRoom(userData) {
     await emitToUser(email, "reload");
 }
 
+async function isUserInRoom(userId, classId) {
+    const result = await dbGet("SELECT 1 FROM classusers WHERE studentId = ? AND classId = ?", [userId, classId]);
+    return !!result;
+}
+
+function getLinksInRoom(classId) {
+    requireInternalParam(classId, "classId");
+    return dbGetAll("SELECT name, url FROM links WHERE classId = ?", [classId]);
+}
+
+/**
+ * Middleware-compatible ownership check for rooms.
+ * Returns a promise resolving to boolean, suitable for isOwnerOrHasScope middleware.
+ * Also caches the room on req._room for use by the handler.
+ */
+async function roomOwnerCheck(req) {
+    const room = await getRoomById(Number(req.params.id));
+    if (!room) {
+        const NotFoundError = require("@errors/not-found-error");
+        throw new NotFoundError("Room not found");
+    }
+    req._room = room;
+    return room.owner === req.user.id;
+}
+
 module.exports = {
-    isUserInRoom,
-    getLinksInRoom,
+    deleteRoom,
+    getRoomById,
+    roomOwnerCheck,
     joinRoomByCode,
     joinRoom,
     leaveRoom,
+    isUserInRoom,
+    getLinksInRoom,
 };

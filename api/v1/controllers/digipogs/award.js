@@ -1,8 +1,9 @@
-const { hasClassPermission } = require("@middleware/permission-check");
-const { CLASS_PERMISSIONS } = require("@modules/permissions");
+const { hasClassScope } = require("@middleware/permission-check");
+const { SCOPES } = require("@modules/permissions");
 const { awardDigipogs } = require("@services/digipog-service");
 const { isAuthenticated } = require("@middleware/authentication");
 const AppError = require("@errors/app-error");
+const { requireBodyParam } = require("@modules/error-wrapper");
 
 module.exports = (router) => {
     /**
@@ -15,14 +16,7 @@ module.exports = (router) => {
      *     description: |
      *       Awards digipogs to a user.
      *
-     *       **Required Permission:** Class-specific `MANAGE_CLASS` permission (typically Teacher or Manager) OR global permission level >= 4 (Teacher or above)
-     *
-     *       **Permission Levels (global):**
-     *       - 1: Guest
-     *       - 2: Student
-     *       - 3: Moderator
-     *       - 4: Teacher
-     *       - 5: Manager
+     *       **Required Scope:** `class.digipogs.award` (granted to Teacher and Manager roles)
      *     security:
      *       - bearerAuth: []
      *       - apiKeyAuth: []
@@ -33,9 +27,30 @@ module.exports = (router) => {
      *           schema:
      *             type: object
      *             properties:
+     *               to:
+     *                 oneOf:
+     *                   - type: string
+     *                     example: "user123"
+     *                   - type: object
+     *                     properties:
+     *                       id:
+     *                         type: string
+     *                         example: "user123"
+     *                       type:
+     *                         type: string
+     *                         enum: [user, class, pool]
+     *                         example: "user"
+     *                       code:
+     *                         type: string
+     *                         example: "ABCD12"
      *               userId:
      *                 type: string
      *                 example: "user123"
+     *                 description: Legacy alias for user recipient
+     *               studentId:
+     *                 type: string
+     *                 example: "user123"
+     *                 description: Legacy alias for user recipient
      *               amount:
      *                 type: integer
      *                 example: 10
@@ -69,13 +84,31 @@ module.exports = (router) => {
      *             schema:
      *               $ref: '#/components/schemas/ServerError'
      */
-    router.post("/digipogs/award", isAuthenticated, hasClassPermission(CLASS_PERMISSIONS.MANAGE_CLASS), async (req, res) => {
-        const { userId, amount } = req.body;
+    router.post("/digipogs/award", isAuthenticated, hasClassScope(SCOPES.CLASS.DIGIPOGS.AWARD), async (req, res) => {
+        const { amount, to, userId, studentId } = req.body || {};
+
+        if (amount === undefined || amount === null) {
+            requireBodyParam(undefined, "amount");
+        }
+
+        if (!to && !userId && !studentId) {
+            requireBodyParam(undefined, "to");
+        }
+
+        const awardPayload = {
+            ...(req.body || {}),
+            ...(to ? {} : { to: { id: userId || studentId, type: "user" } }),
+        };
+
         req.infoEvent("digipogs.award.attempt", "Attempting to award digipogs", { amount });
 
-        const result = await awardDigipogs(req.body, req.user);
+        const result = await awardDigipogs(awardPayload, req.user);
         if (!result.success) {
-            throw new AppError(result, { event: "digipogs.award.failed", reason: "award_error" });
+            throw new AppError(result.message || "Digipogs award failed", {
+                statusCode: result.statusCode || 400,
+                event: "digipogs.award.failed",
+                reason: "award_error",
+            });
         }
 
         req.infoEvent("digipogs.award.success", "Digipogs awarded successfully", { amount });

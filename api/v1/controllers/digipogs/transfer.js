@@ -1,6 +1,7 @@
-const { httpPermCheck } = require("@middleware/permission-check");
 const { transferDigipogs } = require("@services/digipog-service");
 const { isAuthenticated } = require("@middleware/authentication");
+const { hasScope } = require("@middleware/permission-check");
+const { SCOPES } = require("@modules/permissions");
 const AppError = require("@errors/app-error");
 
 module.exports = (router) => {
@@ -14,14 +15,7 @@ module.exports = (router) => {
      *     description: |
      *       Transfers digipogs from your account to another user.
      *
-     *       **Required Permission:** Global Student permission (level 2)
-     *
-     *       **Permission Levels:**
-     *       - 1: Guest
-     *       - 2: Student
-     *       - 3: Moderator
-     *       - 4: Teacher
-     *       - 5: Manager
+     *       **Required Scope:** `global.digipogs.transfer` (granted to Student role and above)
      *     security:
      *       - bearerAuth: []
      *       - apiKeyAuth: []
@@ -82,7 +76,7 @@ module.exports = (router) => {
      *             schema:
      *               $ref: '#/components/schemas/ServerError'
      */
-    router.post("/digipogs/transfer", isAuthenticated, httpPermCheck("transferDigipogs"), async (req, res) => {
+    router.post("/digipogs/transfer", isAuthenticated, hasScope(SCOPES.GLOBAL.DIGIPOGS.TRANSFER), async (req, res) => {
         const { to, amount, pin, reason } = req.body || {};
 
         // Derive the authenticated user ID from the server-side context, not from client input
@@ -109,7 +103,7 @@ module.exports = (router) => {
 
         const result = await transferDigipogs(transferPayload);
         if (!result.success) {
-            throw new AppError(result, { event: "digipogs.transfer.failed", reason: "transfer_error" });
+            throw new AppError(result.message, { statusCode: 400, event: "digipogs.transfer.failed", reason: "transfer_error" });
         }
 
         req.infoEvent("digipogs.transfer.success", "Digipogs transferred successfully", { from, to, amount });

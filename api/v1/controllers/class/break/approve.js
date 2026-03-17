@@ -1,14 +1,19 @@
-const { httpPermCheck } = require("@middleware/permission-check");
+const { hasClassScope } = require("@middleware/permission-check");
+const { SCOPES } = require("@modules/permissions");
 const { classStateStore } = require("@services/classroom-service");
 const { approveBreak } = require("@services/class-service");
 const { isAuthenticated } = require("@middleware/authentication");
+const { requireQueryParam } = require("@modules/error-wrapper");
 const ForbiddenError = require("@errors/forbidden-error");
 const AppError = require("@errors/app-error");
 
 module.exports = (router) => {
     const approveBreakHandler = async (req, res) => {
-        const classId = req.params.id;
-        const targetUserId = req.params.userId;
+        const classId = Number(req.params.id);
+        const targetUserId = Number(req.params.userId);
+        requireQueryParam(classId, "id");
+        requireQueryParam(targetUserId, "userId");
+
         req.infoEvent("class.break.approve.attempt", "Attempting to approve class break", { classId, targetUserId });
         const classroom = classStateStore.getClassroom(classId);
         if (classroom && !classroom.students[req.user.email]) {
@@ -88,10 +93,10 @@ module.exports = (router) => {
      *             schema:
      *               $ref: '#/components/schemas/ServerError'
      */
-    router.post("/class/:id/students/:userId/break/approve", isAuthenticated, httpPermCheck("approveBreak"), approveBreakHandler);
+    router.post("/class/:id/students/:userId/break/approve", isAuthenticated, hasClassScope(SCOPES.CLASS.BREAK.APPROVE), approveBreakHandler);
 
     // Deprecated endpoint - kept for backwards compatibility, use POST /api/v1/class/:id/students/:userId/break/approve instead
-    router.get("/class/:id/students/:userId/break/approve", isAuthenticated, httpPermCheck("approveBreak"), async (req, res) => {
+    router.get("/class/:id/students/:userId/break/approve", isAuthenticated, hasClassScope(SCOPES.CLASS.BREAK.APPROVE), async (req, res) => {
         res.setHeader("X-Deprecated", "Use POST /api/v1/class/:id/students/:userId/break/approve instead");
         res.setHeader(
             "Warning",

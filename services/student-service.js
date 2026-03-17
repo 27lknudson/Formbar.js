@@ -12,6 +12,8 @@ class Student {
         this.activeClass = null;
         this.permissions = permissions;
         this.classPermissions = null;
+        this.role = null;
+        this.classRole = null;
         this.tags = tags || [];
         this.ownedPolls = ownedPolls || [];
         this.sharedPolls = sharedPolls || [];
@@ -30,6 +32,109 @@ class Student {
 }
 
 /**
+ * Normalizes user tags into an array of strings.
+ * Accepts either comma-delimited strings or arrays.
+ * @param {string|string[]|null|undefined} tags
+ * @returns {string[]}
+ */
+function normalizeTags(tags) {
+    if (Array.isArray(tags)) {
+        return tags
+            .filter((tag) => typeof tag === "string")
+            .map((tag) => tag.trim())
+            .filter(Boolean);
+    }
+
+    if (typeof tags !== "string" || !tags.trim()) {
+        return [];
+    }
+
+    return tags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+}
+
+/**
+ * Safely parses arrays that may be persisted as JSON strings.
+ * @param {unknown} value
+ * @returns {Array}
+ */
+function parseArrayField(value) {
+    if (Array.isArray(value)) return value;
+    if (typeof value !== "string" || !value.trim()) return [];
+
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+        return [];
+    }
+}
+
+/**
+ * Builds a standardized in-memory Student/session user object from a DB row
+ * or existing user-like object.
+ * @param {Object} userData
+ * @param {Object} [options]
+ * @param {boolean} [options.isGuest]
+ * @returns {Student}
+ */
+function createStudentFromUserData(userData, options = {}) {
+    const isGuest = options.isGuest != null ? options.isGuest : Boolean(userData?.isGuest);
+
+    const student = new Student(
+        userData.email,
+        userData.id,
+        userData.permissions,
+        userData.API,
+        parseArrayField(userData.ownedPolls),
+        parseArrayField(userData.sharedPolls),
+        normalizeTags(userData.tags),
+        userData.displayName,
+        isGuest
+    );
+
+    if (userData.activeClass != null) {
+        student.activeClass = userData.activeClass;
+    }
+
+    if (userData.classPermissions != null) {
+        student.classPermissions = userData.classPermissions;
+    }
+
+    if (userData.role != null) {
+        student.role = userData.role;
+    }
+
+    if (userData.classRole != null) {
+        student.classRole = userData.classRole;
+    }
+
+    if (userData.pogMeter != null) {
+        student.pogMeter = userData.pogMeter;
+    }
+
+    if (userData.help !== undefined) {
+        student.help = userData.help;
+    }
+
+    if (userData.break !== undefined) {
+        student.break = userData.break;
+    }
+
+    if (userData.pollRes && typeof userData.pollRes === "object") {
+        student.pollRes = { ...student.pollRes, ...userData.pollRes };
+    }
+
+    if (Object.prototype.hasOwnProperty.call(userData, "verified")) {
+        student.verified = userData.verified;
+    }
+
+    return student;
+}
+
+/**
  * Retrieves the students in a class from the database.
  * Creates an actual student class for each student rather than just returning their data.
  * @param {integer} classId - The class id.
@@ -38,7 +143,7 @@ class Student {
 async function getStudentsInClass(classId) {
     // Grab students associated with the class
     const studentIdsAndPermissions = await new Promise((resolve, reject) => {
-        database.all("SELECT studentId, permissions FROM classusers WHERE classId = ?", [classId], (err, rows) => {
+        database.all("SELECT * FROM classusers WHERE classId = ?", [classId], (err, rows) => {
             if (err) {
                 return reject(err);
             }
@@ -46,6 +151,7 @@ async function getStudentsInClass(classId) {
             const studentIdsAndPermissions = rows.map((row) => ({
                 id: row.studentId,
                 permissions: row.permissions,
+                classRole: row.role || null,
             }));
 
             resolve(studentIdsAndPermissions);
@@ -73,20 +179,11 @@ async function getStudentsInClass(classId) {
     const students = {};
     for (const email in studentsData) {
         const userData = studentsData[email];
-        const studentPermissions = studentIdsAndPermissions.find((student) => student.id === userData.id).permissions;
-        students[email] = new Student(
-            userData.email,
-            userData.id,
-            userData.permissions,
-            userData.API,
-            [],
-            [],
-            userData.tags ? userData.tags.split(",") : [],
-            (displayName = userData.displayName),
-            false
-        );
-
-        students[email].classPermissions = studentPermissions;
+        const classUserRow = studentIdsAndPermissions.find((student) => student.id === userData.id);
+        const student = createStudentFromUserData(userData, { isGuest: false });
+        student.classPermissions = classUserRow.permissions;
+        student.classRole = classUserRow.classRole;
+        students[email] = student;
     }
 
     return students;
@@ -139,6 +236,7 @@ async function getEmailFromId(userId) {
 
 module.exports = {
     Student,
+    createStudentFromUserData,
     getStudentsInClass,
     getIdFromEmail,
     getEmailFromId,
