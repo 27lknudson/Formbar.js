@@ -19,7 +19,7 @@ class Student {
         this.sharedPolls = sharedPolls || [];
         this.pollRes = {
             buttonRes: "",
-            textRes: "",
+            textRes: { raw: "", processed: "" },
             time: null,
         };
         this.help = false;

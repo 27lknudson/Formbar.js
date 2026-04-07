@@ -141,7 +141,7 @@ module.exports = {
                 const student = classData.students[email];
                 if (student && student.pollRes) {
                     student.pollRes.buttonRes = "";
-                    student.pollRes.textRes = "";
+                    student.pollRes.textRes = { raw: "", processed: "" };
                     student.pollRes.date = null;
                 }
             }

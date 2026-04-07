@@ -10,6 +10,7 @@ const ValidationError = require("@errors/validation-error");
 const ForbiddenError = require("@errors/forbidden-error");
 const { requireInternalParam } = require("@modules/error-wrapper");
 const { pollRuntimeStore } = require("@stores/poll-runtime-store");
+const { processMarkdown } = require("@modules/markdown");
 
 /**
  * Gets a classroom by ID and throws an error if not found.
@@ -32,7 +33,7 @@ function getClassroom(classId) {
 function resetStudentPollResponses(classroom) {
     for (const key in classroom.students) {
         classroom.students[key].pollRes.buttonRes = "";
-        classroom.students[key].pollRes.textRes = "";
+        classroom.students[key].pollRes.textRes = { raw: "", processed: "" };
     }
 }
 
@@ -68,7 +69,7 @@ function isUserExcludedFromVoting(classroom, user, student) {
  */
 function isValidPollResponse(poll, res, isRemoving) {
     if (!poll.allowMultipleResponses) {
-        if (res !== "remove" && !poll.responses.some((response) => response.answer === res)) {
+        if (res !== "remove" && !poll.responses.some((response) => response.answer.raw === res)) {
             return false;
         }
     } else {
@@ -77,7 +78,7 @@ function isValidPollResponse(poll, res, isRemoving) {
         } else if (!Array.isArray(res)) {
             return false;
         } else {
-            const validResponses = poll.responses.map((r) => r.answer);
+            const validResponses = poll.responses.map((r) => r.answer.raw);
             const allValid = res.every((response) => validResponses.includes(response));
             if (!allValid) {
                 return false;
@@ -99,12 +100,12 @@ function calculateResponseWeight(poll, res) {
     if (poll.allowMultipleResponses && Array.isArray(res)) {
         // Sum weights for all selected responses
         resWeight = res.reduce((sum, answer) => {
-            const responseObj = poll.responses.find((response) => response.answer === answer);
+            const responseObj = poll.responses.find((response) => response.answer.raw === answer);
             return sum + (responseObj ? responseObj.weight : 1);
         }, 0);
     } else {
         // Single response
-        const responseObj = poll.responses.find((response) => response.answer === res);
+        const responseObj = poll.responses.find((response) => response.answer.raw === res);
         resWeight = responseObj ? responseObj.weight : 1;
     }
 
@@ -118,15 +119,18 @@ function calculateResponseWeight(poll, res) {
  * @param {string} textRes - The text response.
  * @param {boolean} isRemoving - Whether the user is removing their response.
  * @param {boolean} allowMultipleResponses - Whether multiple responses are allowed.
+ * @param {boolean} allowImagesInResponses - Whether images are allowed in responses.
  */
-function updateStudentPollResponse(student, res, textRes, isRemoving, allowMultipleResponses) {
+function updateStudentPollResponse(student, res, textRes, isRemoving, allowMultipleResponses, allowImagesInResponses) {
     if (isRemoving) {
         student.pollRes.buttonRes = allowMultipleResponses ? [] : "";
-        student.pollRes.textRes = "";
+        student.pollRes.textRes.raw = "";
+        student.pollRes.textRes.processed = "";
         student.pollRes.time = "";
     } else {
         student.pollRes.buttonRes = res;
-        student.pollRes.textRes = textRes;
+        student.pollRes.textRes.raw = textRes;
+        student.pollRes.textRes.processed = processMarkdown(textRes, allowImagesInResponses);
         student.pollRes.time = new Date();
     }
 }
@@ -150,7 +154,7 @@ function broadcastClassUpdate(email, classId) {
  * @throws {ValidationError} If class is not active
  */
 async function createPoll(classId, pollData, userData) {
-    const { prompt, answers, blind, weight, excludedRespondents, allowVoteChanges, allowTextResponses, allowMultipleResponses } =
+    const { prompt, answers, blind, weight, excludedRespondents, allowVoteChanges, allowTextResponses, allowImagesInResponses, allowMultipleResponses } =
         pollData;
     const numberOfResponses = Object.keys(answers).length;
 
@@ -182,12 +186,13 @@ async function createPoll(classId, pollData, userData) {
     // Creates an object for every answer possible the teacher is allowing
     const letterString = "abcdefghijklmnopqrstuvwxyz";
     for (let i = 0; i < numberOfResponses; i++) {
-        let answer = letterString[i];
+        let answer = { raw: letterString[i] };
         let weight = 1;
         let color = generatedColors[i];
 
         if (answers[i].answer) {
-            answer = processMarkdown(answers[i].answer);
+            answer.raw = answers[i].answer;
+            answer.processed = processMarkdown(answers[i].answer, true);
         }
 
         if (answers[i].weight) {
@@ -212,7 +217,9 @@ async function createPoll(classId, pollData, userData) {
     pollRuntimeStore.setPollStartTime(classId, Date.now());
     classroom.poll.weight = weight;
     classroom.poll.allowTextResponses = allowTextResponses;
-    classroom.poll.prompt = prompt;
+    classroom.poll.allowImagesInResponses = allowImagesInResponses;
+    classroom.poll.prompt.raw = prompt;
+    classroom.poll.prompt.processed = processMarkdown(prompt, true);
     classroom.poll.allowMultipleResponses = allowMultipleResponses;
 
     resetStudentPollResponses(classroom);
@@ -295,6 +302,7 @@ async function getPreviousPolls(classId, index = 0, limit = 20) {
         poll.allowMultipleResponses = !!poll.allowMultipleResponses;
         poll.blind = !!poll.blind;
         poll.allowTextResponses = !!poll.allowTextResponses;
+        poll.allowImagesInResponses = !!poll.allowImagesInResponses;
 
         // Parse responses from JSON string to object
         if (typeof poll.responses === "string") {
@@ -302,6 +310,14 @@ async function getPreviousPolls(classId, index = 0, limit = 20) {
                 poll.responses = JSON.parse(poll.responses);
             } catch (err) {
                 poll.responses = null;
+            }
+        }
+        // Parse prompt from JSON string to object
+        if (typeof poll.prompt === "string") {
+            try {
+                poll.prompt = JSON.parse(poll.prompt);
+            } catch (err) {
+                poll.prompt = { raw: poll.prompt, processed: processMarkdown(poll.prompt, true) };
             }
         }
 
@@ -318,15 +334,16 @@ async function savePollToHistory(classId) {
     if (!classroom) return;
 
     const createdAt = Date.now();
-    const prompt = classroom.poll.prompt;
+    const prompt = JSON.stringify(classroom.poll.prompt);
     const responses = JSON.stringify(classroom.poll.responses);
     const allowMultipleResponses = classroom.poll.allowMultipleResponses ? 1 : 0;
     const blind = classroom.poll.blind ? 1 : 0;
     const allowTextResponses = classroom.poll.allowTextResponses ? 1 : 0;
+    const allowImagesInResponses = classroom.poll.allowImagesInResponses ? 1 : 0;
 
     return dbRun(
-        "INSERT INTO poll_history(class, prompt, responses, allowMultipleResponses, blind, allowTextResponses, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)",
-        [classId, prompt, responses, allowMultipleResponses, blind, allowTextResponses, createdAt]
+        "INSERT INTO poll_history(class, prompt, responses, allowMultipleResponses, blind, allowTextResponses, allowImagesInResponses, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+        [classId, prompt, responses, allowMultipleResponses, blind, allowTextResponses, allowImagesInResponses, createdAt]
     );
 }
 
@@ -347,12 +364,14 @@ async function clearPoll(classId, userSession, updateClass = true) {
     const currentPollId = pollRuntimeStore.getLastSavedPollId(classId);
 
     classroom.poll.responses = [];
-    classroom.poll.prompt = "";
+    classroom.poll.prompt = { raw: "", processed: "" };
     classroom.poll = {
         status: false,
         responses: [],
         allowTextResponses: false,
-        prompt: "",
+        allowImagesInResponses: false,
+        allowMultipleResponses: false,
+        prompt: { raw: "", processed: "" },
         weight: 1,
         blind: false,
         excludedRespondents: [],
@@ -384,7 +403,7 @@ async function clearPoll(classId, userSession, updateClass = true) {
             const textResponse = student.pollRes.textRes || null;
 
             // Skip students with no response at all
-            if (buttonResponse === null && textResponse === null) continue;
+            if (buttonResponse === null && textResponse.raw === null) continue;
 
             const studentId = student.id;
             await dbRun(
@@ -454,7 +473,7 @@ function sendPollResponse(classId, res, textRes, userSession) {
         hasChanged = false;
     }
 
-    if (hasChanged || student.pollRes.textRes !== textRes) {
+    if (hasChanged || (student.pollRes.textRes.raw || "") !== (textRes || "")) {
         if (isRemoving) {
             advancedEmitToClass("removePollSound", classId, {});
         } else {
@@ -463,7 +482,7 @@ function sendPollResponse(classId, res, textRes, userSession) {
     }
 
     // Update student's poll response
-    updateStudentPollResponse(student, res, textRes, isRemoving, classroom.poll.allowMultipleResponses);
+    updateStudentPollResponse(student, res, textRes, isRemoving, classroom.poll.allowMultipleResponses, classroom.poll.allowImagesInResponses);
 
     // Handle pog meter updates
     if (!isRemoving && !pollRuntimeStore.hasPogMeterIncreased(classId, email)) {
@@ -506,7 +525,7 @@ function getPollResponses(classData) {
     // For each response in the poll responses
     for (let resValue of classData.poll.responses) {
         // Add the response to the tempPolls object and initialize the count of responses to 0
-        tempPolls[resValue.answer] = {
+        tempPolls[resValue.answer.raw] = {
             ...resValue,
             responses: 0,
         };

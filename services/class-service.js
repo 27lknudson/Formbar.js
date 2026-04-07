@@ -823,7 +823,7 @@ async function saveTags(studentId, tags, userSession) {
 
     if (!wasExcluded && isNowExcluded && student.pollRes) {
         student.pollRes.buttonRes = "";
-        student.pollRes.textRes = "";
+        student.pollRes.textRes = { raw: "", processed: "" };
         student.pollRes.date = null;
     }
 

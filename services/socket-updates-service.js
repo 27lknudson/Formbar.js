@@ -301,13 +301,13 @@ function getPollResponseInformation(classData) {
             // Add to the count for each response option
             if (Array.isArray(studentData.pollRes.buttonRes)) {
                 for (let res of studentData.pollRes.buttonRes) {
-                    const responseObj = classData.poll.responses.find((r) => r.answer === res);
+                    const responseObj = classData.poll.responses.find((r) => r.answer.raw === res);
                     if (responseObj) {
                         responseObj.responses++;
                     }
                 }
             } else if (studentData.pollRes.buttonRes) {
-                const responseObj = classData.poll.responses.find((r) => r.answer === studentData.pollRes.buttonRes);
+                const responseObj = classData.poll.responses.find((r) => r.answer.raw === studentData.pollRes.buttonRes);
                 if (responseObj) {
                     responseObj.responses++;
                 }
